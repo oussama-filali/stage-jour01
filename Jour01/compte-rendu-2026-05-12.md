@@ -145,6 +145,8 @@ Référence : https://www.jenkins.io/doc/book/security/
 
 Je sais construire des APIs : l’objectif ici est de me concentrer sur comment les sécuriser et les auditer.
 
+Dans mon mini projet, j’utilise Node.js en natif (module `node:http`) et pas Express.
+
 ### 📖 Points de sécurité à maîtriser sur une API REST
 
 Exemple d’appel :
@@ -160,39 +162,74 @@ Content-Type: application/json
 | Authentification | JWT sans expiration, secret faible | exp dans le payload, secret fort en env |
 | Autorisation (IDOR) | /api/users/42 accessible par n'importe qui | Vérifier que l'user connecté = propriétaire de la ressource |
 | Validation des inputs | Pas de schéma de validation → injection | zod ou joi sur chaque endpoint |
-| Rate limiting | Pas de limite → brute force, DoS | express-rate-limit sur les routes sensibles |
-| Headers de sécurité | Pas de headers → info leak, XSS | helmet sur Express en une ligne |
+| Rate limiting | Pas de limite → brute force, DoS | Limiter les requêtes par IP (en code, ou via un reverse proxy) |
+| Headers de sécurité | Pas de headers → info leak, XSS | Ajouter des headers (CSP, X-Frame-Options, etc.) |
 | CORS mal configuré | Access-Control-Allow-Origin: * | Whitelist explicite des origines |
 | Logs & monitoring | Aucune trace des appels | Logger chaque requête avec IP, user, endpoint |
 
-### ⚡ Exemple : sécuriser une API Express en 5 minutes
+### ⚡ Exemple : sécuriser une API Node (sans Express) en 5 minutes
 
 ```javascript
-import express from 'express'
-import helmet from 'helmet'
-import rateLimit from 'express-rate-limit'
-import cors from 'cors'
+import http from 'node:http'
+import { URL } from 'node:url'
 
-const app = express()
+const allowedOrigins = new Set(['https://stormsecurity.fr'])
 
-// Headers de sécurité automatiques
-app.use(helmet())
+// Rate limiting très simple en mémoire (à remplacer par Redis en prod)
+const counters = new Map()
+function isRateLimited(ip, key, { windowMs, max }) {
+	const now = Date.now()
+	const counterKey = `${key}:${ip}`
+	const entry = counters.get(counterKey)
 
-// CORS strict
-app.use(cors({ origin: ['https://stormsecurity.fr'] }))
+	if (!entry || now > entry.resetAt) {
+		counters.set(counterKey, { count: 1, resetAt: now + windowMs })
+		return false
+	}
 
-// Rate limiting global
-app.use(rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 min
-  max: 100,                  // 100 req max par IP
-  message: 'Trop de requêtes, réessaie plus tard.'
-}))
+	entry.count += 1
+	return entry.count > max
+}
 
-// Rate limiting renforcé sur le login
-const loginLimiter = rateLimit({ windowMs: 60000, max: 5 })
-app.post('/api/login', loginLimiter, (req, res) => {
-  // ...
+function setSecurityHeaders(res) {
+	res.setHeader('x-content-type-options', 'nosniff')
+	res.setHeader('x-frame-options', 'DENY')
+	res.setHeader('referrer-policy', 'no-referrer')
+	res.setHeader('content-security-policy', "default-src 'none'")
+}
+
+const server = http.createServer(async (req, res) => {
+	setSecurityHeaders(res)
+
+	// CORS strict (si besoin)
+	const origin = req.headers.origin
+	if (origin && allowedOrigins.has(origin)) {
+		res.setHeader('access-control-allow-origin', origin)
+		res.setHeader('vary', 'origin')
+	}
+
+	const url = new URL(req.url ?? '/', 'http://localhost')
+	const ip = (req.socket.remoteAddress ?? 'unknown').replace('::ffff:', '')
+
+	if (url.pathname === '/api/login' && req.method === 'POST') {
+		// Rate limiting renforcé sur le login
+		if (isRateLimited(ip, 'login', { windowMs: 60_000, max: 5 })) {
+			res.writeHead(429, { 'content-type': 'text/plain; charset=utf-8' })
+			res.end('Trop de requêtes, réessaie plus tard.')
+			return
+		}
+
+		// Ici : lire le body + valider les champs (ex: zod/joi)
+		res.writeHead(200, { 'content-type': 'application/json' })
+		res.end(JSON.stringify({ ok: true }))
+		return
+	}
+
+	res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+	res.end('Not found')
 })
+
+server.listen(3000)
 ```
 
 Ressource : https://owasp.org/www-project-api-security/
