@@ -74,3 +74,125 @@ Plutôt que d’attendre, j’ai préparé le projet pour que Jenkins puisse val
 
 ## Résumé
 Après une mise à jour, Docker Desktop est resté bloqué sur le démarrage, avec des erreurs côté API. Après plusieurs tentatives (désinstallation/réinstallation/clean), la solution retenue a été de réinstaller proprement et de basculer sur Hyper-V au lieu de WSL. Pendant le blocage, j’ai préparé Jenkins + un mini projet Node afin de pouvoir valider le fonctionnement du pipeline dès que Docker est opérationnel.
+
+---
+
+## 🧪 Créer mon premier pipeline (Jenkinsfile)
+
+J’ai utilisé un pipeline simple en 4 étapes (Install/Lint/Test/Build) afin d’avoir une base CI reproductible.
+
+Jenkinsfile (à la racine du repo) :
+
+```groovy
+pipeline {
+	agent any
+	stages {
+		stage('Install') {
+			steps {
+				dir('Jour01/node-demo') {
+					sh 'npm ci'
+				}
+			}
+		}
+		stage('Lint') {
+			steps {
+				dir('Jour01/node-demo') {
+					sh 'npm run lint'
+				}
+			}
+		}
+		stage('Test') {
+			steps {
+				dir('Jour01/node-demo') {
+					sh 'npm test'
+				}
+			}
+		}
+		stage('Build') {
+			steps {
+				dir('Jour01/node-demo') {
+					sh 'npm run build'
+				}
+			}
+		}
+	}
+	post {
+		success { echo '✅ Pipeline OK : prêt à déployer' }
+		failure { echo '❌ Quelque chose a planté : vérifie les logs' }
+	}
+}
+```
+
+---
+
+## 🔐 Jenkins — erreurs de sécurité classiques à connaître
+
+C’est important dans un contexte Stormsecurity : en audit CI/CD, je retrouve souvent les mêmes mauvaises configurations.
+
+| Mauvaise pratique | Risque | Bonne pratique |
+|------------------|--------|----------------|
+| Credentials en clair dans le Jenkinsfile | Exposition des secrets dans le repo | Utiliser Jenkins Credentials Manager |
+| Builds qui tournent sur le controller | Compromission du serveur Jenkins | Utiliser des agents/nodes dédiés |
+| Jenkins exposé sur Internet sans auth | Accès total à l'infrastructure | Reverse proxy + authentification forte |
+| Pas de RBAC | N'importe qui peut lancer un build | Configurer les rôles (Role Strategy Plugin) |
+| Dépendances non vérifiées | Supply chain attack | npm audit + OWASP Dependency Check dans le pipeline |
+
+Référence : https://www.jenkins.io/doc/book/security/
+
+---
+
+## 2. API REST sécurisée
+
+Je sais construire des APIs : l’objectif ici est de me concentrer sur comment les sécuriser et les auditer.
+
+### 📖 Points de sécurité à maîtriser sur une API REST
+
+Exemple d’appel :
+
+```
+POST /api/login
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+| Point de contrôle | Problème fréquent | Solution |
+|------------------|-------------------|----------|
+| Authentification | JWT sans expiration, secret faible | exp dans le payload, secret fort en env |
+| Autorisation (IDOR) | /api/users/42 accessible par n'importe qui | Vérifier que l'user connecté = propriétaire de la ressource |
+| Validation des inputs | Pas de schéma de validation → injection | zod ou joi sur chaque endpoint |
+| Rate limiting | Pas de limite → brute force, DoS | express-rate-limit sur les routes sensibles |
+| Headers de sécurité | Pas de headers → info leak, XSS | helmet sur Express en une ligne |
+| CORS mal configuré | Access-Control-Allow-Origin: * | Whitelist explicite des origines |
+| Logs & monitoring | Aucune trace des appels | Logger chaque requête avec IP, user, endpoint |
+
+### ⚡ Exemple : sécuriser une API Express en 5 minutes
+
+```javascript
+import express from 'express'
+import helmet from 'helmet'
+import rateLimit from 'express-rate-limit'
+import cors from 'cors'
+
+const app = express()
+
+// Headers de sécurité automatiques
+app.use(helmet())
+
+// CORS strict
+app.use(cors({ origin: ['https://stormsecurity.fr'] }))
+
+// Rate limiting global
+app.use(rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: 100,                  // 100 req max par IP
+  message: 'Trop de requêtes, réessaie plus tard.'
+}))
+
+// Rate limiting renforcé sur le login
+const loginLimiter = rateLimit({ windowMs: 60000, max: 5 })
+app.post('/api/login', loginLimiter, (req, res) => {
+  // ...
+})
+```
+
+Ressource : https://owasp.org/www-project-api-security/
