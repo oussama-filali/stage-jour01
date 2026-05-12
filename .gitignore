@@ -1,0 +1,19 @@
+# Node
+node_modules/
+.npm/
+.pnpm-store/
+dist/
+build/
+coverage/
+.env
+
+# Journaux
+*.log
+
+# Système
+.DS_Store
+Thumbs.db
+
+# Éditeurs
+.vscode/
+.idea/
