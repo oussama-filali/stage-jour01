@@ -17,3 +17,6 @@ Thumbs.db
 # Éditeurs
 .vscode/
 .idea/
+
+# n8n (workflows/credentials locaux)
+.n8n/
